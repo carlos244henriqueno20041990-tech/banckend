@@ -6,6 +6,7 @@ const morgan = require('morgan');
 const cors = require('cors');
 const app = express();
 const bodyParser = require('body-parser');
+const { autenticar } = require('./middleware/authenticate');
 app.use(morgan('dev'));
 app.use(bodyParser.urlencoded({extended:false}));
 app.use(bodyParser.json());
@@ -18,22 +19,29 @@ const routerSaida = require('./route/routeSaida');
 const routerPedido = require('./route/routePedido');
 const routerEstoque = require('./route/routeEstoque');
 
+const allowedOrigins = new Set(
+  (process.env.CORS_ORIGIN || 'http://localhost:5173,http://127.0.0.1:5173')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+);
+
 //2. Controle de CORS (Headers & OPTIONS)
 app.use(cors({
-  origin: '*',
+  origin: (origin, callback) => callback(null, !origin || allowedOrigins.has(origin)),
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization']
 }));
 
 //3. Definição de Rotas
 app.use('/usuario', routerUser);
-app.use('/clientes', routerCliente);
-app.use('/fornecedores', routerFornecedor);
-app.use('/produtos', routerProduto);
-app.use('/entradas', routerEntrada);
-app.use('/saidas', routerSaida);
-app.use('/pedidos', routerPedido);
-app.use('/estoque', routerEstoque);
+app.use('/clientes', autenticar, routerCliente);
+app.use('/fornecedores', autenticar, routerFornecedor);
+app.use('/produtos', autenticar, routerProduto);
+app.use('/entradas', autenticar, routerEntrada);
+app.use('/saidas', autenticar, routerSaida);
+app.use('/pedidos', autenticar, routerPedido);
+app.use('/estoque', autenticar, routerEstoque);
 
 
 //4. Tratamento de Erros (Fallback & Handler)

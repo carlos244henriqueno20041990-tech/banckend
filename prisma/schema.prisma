@@ -1,0 +1,134 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model User {
+  id            Int       @id @default(autoincrement()) @map("id_usu")
+  nome          String    @db.VarChar(80)
+  email         String    @unique @db.VarChar(100)
+  senha         String    @db.VarChar(255)
+  contato       String?   @db.VarChar(20)
+  genero        String?   @db.Char(1)
+  ativo         Boolean?  @default(true)
+  criado_em     DateTime? @default(now()) @db.Timestamp(0)
+  atualizado_em DateTime? @default(now()) @updatedAt @db.Timestamp(0)
+
+  @@map("usuarios")
+}
+
+model Cliente {
+  id_cliente    Int       @id @default(autoincrement())
+  nome          String    @db.VarChar(100)
+  email         String    @unique @db.VarChar(100)
+  contato       String?   @db.VarChar(20)
+  ativo         Boolean?  @default(true)
+  criado_em     DateTime? @default(now()) @db.Timestamp(0)
+  atualizado_em DateTime? @default(now()) @updatedAt @db.Timestamp(0)
+
+  @@map("clientes")
+}
+
+model Fornecedor {
+  id_fornecedor Int       @id @default(autoincrement())
+  nome          String    @db.VarChar(100)
+  empresa       String?   @db.VarChar(100)
+  email         String?   @unique @db.VarChar(100)
+  telefone      String?   @db.VarChar(20)
+  cidade        String?   @db.VarChar(50)
+  estado        String?   @db.Char(2)
+  ativo         Boolean?  @default(true)
+  criado_em     DateTime? @default(now()) @db.Timestamp(0)
+  atualizado_em DateTime? @default(now()) @updatedAt @db.Timestamp(0)
+  entradas      Entrada[]
+
+  @@map("fornecedores")
+}
+
+model Funcionario {
+  id_funcionario Int       @id @default(autoincrement())
+  nome           String    @db.VarChar(100)
+  cargo          String    @db.VarChar(50)
+  salario        Float     @db.Double
+  telefone       String?   @db.VarChar(20)
+  email          String?   @unique @db.VarChar(100)
+  data_admissao  DateTime? @db.Date
+  ativo          Boolean?  @default(true)
+  criado_em      DateTime  @default(now()) @db.Timestamp(0)
+  atualizado_em  DateTime  @default(now()) @updatedAt @db.Timestamp(0)
+
+  @@map("funcionarios")
+}
+
+model Produto {
+  id_produto     Int       @id @default(autoincrement())
+  nome           String?   @db.VarChar(100)
+  descricao      String    @db.VarChar(200)
+  preco          Float     @db.Double
+  imagem_produto String    @db.VarChar(255)
+  criado_em      DateTime? @default(now()) @db.Timestamp(0)
+  atualizado_em  DateTime? @default(now()) @updatedAt @db.Timestamp(0)
+  entradas       Entrada[]
+  estoque        Estoque[]
+
+  @@map("produtos")
+}
+
+model Pedido {
+  id_pedido     Int       @id @default(autoincrement())
+  status        Boolean?  @default(true)
+  data_pedido   DateTime? @db.Date
+  id_cliente    Int?
+  criado_em     DateTime? @default(now()) @db.Timestamp(0)
+  atualizado_em DateTime? @default(now()) @updatedAt @db.Timestamp(0)
+
+  @@map("pedidos")
+}
+
+model Entrada {
+  id_entrada     Int        @id @default(autoincrement())
+  id_produto     Int
+  id_fornecedor  Int
+  quantidade     Int
+  valor_unitario Float      @db.Double
+  data_entrada   DateTime?  @db.Date
+  observacao     String?    @db.VarChar(200)
+  criado_em      DateTime?  @default(now()) @db.Timestamp(0)
+  atualizado_em  DateTime?  @default(now()) @updatedAt @db.Timestamp(0)
+  produto        Produto    @relation(fields: [id_produto], references: [id_produto])
+  fornecedor     Fornecedor @relation(fields: [id_fornecedor], references: [id_fornecedor])
+
+  @@index([id_produto], map: "fk_entradas_produtos")
+  @@index([id_fornecedor], map: "fk_entradas_fornecedores")
+  @@map("entradas")
+}
+
+model Saida {
+  id_saida       Int       @id @default(autoincrement())
+  id_produto     Int
+  id_funcionario Int
+  quantidade     Int
+  valor_unitario Float     @db.Double
+  data_saida     DateTime? @db.Date
+  destino        String?   @db.VarChar(100)
+  criado_em      DateTime  @default(now()) @db.Timestamp(0)
+  atualizado_em  DateTime  @default(now()) @updatedAt @db.Timestamp(0)
+
+  @@map("saidas")
+}
+
+model Estoque {
+  id_estoque     Int     @id @default(autoincrement())
+  id_produto     Int
+  quantidade     Int
+  estoque_minimo Int?
+  estoque_maximo Int?
+  localizacao    String? @db.VarChar(100)
+  produto        Produto @relation(fields: [id_produto], references: [id_produto])
+
+  @@index([id_produto], map: "id_produto")
+  @@map("estoque")
+}

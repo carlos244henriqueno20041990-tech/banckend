@@ -17,3 +17,4 @@ yarn-error.log*
 /assets/img
 .env
 carloshenriquenogueira_loja_oficial (1).sql
+/generated/prisma

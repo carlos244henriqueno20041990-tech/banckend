@@ -1,18 +1,11 @@
 const express = require('express');
-const pool = require('../mysql').pool;
+const prisma = require('../db/prisma');
 
 const router = express.Router();
 
-function sendError(res, connection, status, message) {
-    connection.rollback(() => {
-        connection.release();
-        res.status(status).send({ error: message });
-    });
-}
-
-router.post('/', (req, res) => {
-    const allowedFields = ['id_produto', 'quantidade', 'estoque_minimo', 'estoque_maximo', 'localizacao'];
+router.post('/', async (req, res) => {
     const body = req.body;
+    const allowedFields = ['id_produto', 'quantidade', 'estoque_minimo', 'estoque_maximo', 'localizacao'];
 
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
         return res.status(400).send({ error: 'Envie um objeto JSON.' });
@@ -24,12 +17,12 @@ router.post('/', (req, res) => {
         return res.status(400).send({ error: 'Informe o produto e a quantidade inicial.' });
     }
 
-    const productId = Number(body.id_produto);
-    const quantity = Number(body.quantidade);
-    if (!Number.isInteger(productId) || productId < 1) {
+    const idProduto = Number(body.id_produto);
+    const quantidade = Number(body.quantidade);
+    if (!Number.isInteger(idProduto) || idProduto < 1) {
         return res.status(400).send({ error: 'id_produto deve ser um inteiro positivo.' });
     }
-    if (!Number.isInteger(quantity) || quantity < 0) {
+    if (!Number.isInteger(quantidade) || quantidade < 0) {
         return res.status(400).send({ error: 'quantidade deve ser um inteiro não negativo.' });
     }
 
@@ -48,72 +41,70 @@ router.post('/', (req, res) => {
         return res.status(400).send({ error: 'localizacao deve ser um texto de até 100 caracteres.' });
     }
 
-    pool.getConnection((connectionError, connection) => {
-        if (connectionError) return res.status(500).send({ error: 'Erro ao conectar ao banco de dados.' });
-        connection.beginTransaction((transactionError) => {
-            if (transactionError) {
-                connection.release();
-                return res.status(500).send({ error: 'Não foi possível iniciar a operação.' });
+    try {
+        const estoque = await prisma.$transaction(async (transaction) => {
+            const produtos = await transaction.$queryRaw`
+                SELECT id_produto FROM produtos WHERE id_produto = ${idProduto} FOR UPDATE
+            `;
+            if (produtos.length === 0) {
+                const error = new Error('Produto não encontrado.');
+                error.status = 404;
+                throw error;
             }
 
-            connection.query('SELECT id_produto FROM produtos WHERE id_produto = ? FOR UPDATE', [productId], (productError, products) => {
-                if (productError) return sendError(res, connection, 500, 'Erro ao consultar produto.');
-                if (products.length === 0) return sendError(res, connection, 404, 'Produto não encontrado.');
+            const existente = await transaction.estoque.findFirst({ where: { id_produto: idProduto } });
+            if (existente) {
+                const error = new Error('Já existe um registro de estoque para esse produto.');
+                error.status = 409;
+                throw error;
+            }
 
-                connection.query('SELECT id_estoque FROM estoque WHERE id_produto = ? FOR UPDATE', [productId], (stockError, stocks) => {
-                    if (stockError) return sendError(res, connection, 500, 'Erro ao consultar estoque.');
-                    if (stocks.length > 0) return sendError(res, connection, 409, 'Já existe um registro de estoque para esse produto.');
-
-                    const fields = allowedFields.filter((field) => body[field] !== undefined);
-                    const columns = fields.map((field) => `\`${field}\``).join(', ');
-                    const placeholders = fields.map(() => '?').join(', ');
-                    const values = fields.map((field) => body[field]);
-                    connection.query(`INSERT INTO estoque (${columns}) VALUES (${placeholders})`, values, (insertError, result) => {
-                        if (insertError) return sendError(res, connection, 500, 'Erro ao cadastrar estoque.');
-                        connection.commit((commitError) => {
-                            if (commitError) return sendError(res, connection, 500, 'Não foi possível confirmar a operação.');
-                            connection.release();
-                            res.status(201).send({ mensagem: 'Estoque cadastrado com sucesso.', id: result.insertId });
-                        });
-                    });
-                });
+            return transaction.estoque.create({
+                data: {
+                    id_produto: idProduto,
+                    quantidade,
+                    estoque_minimo: body.estoque_minimo == null ? null : Number(body.estoque_minimo),
+                    estoque_maximo: body.estoque_maximo == null ? null : Number(body.estoque_maximo),
+                    localizacao: body.localizacao || null
+                },
+                select: { id_estoque: true }
             });
         });
-    });
+
+        return res.status(201).send({
+            mensagem: 'Estoque cadastrado com sucesso.',
+            id: estoque.id_estoque
+        });
+    } catch (error) {
+        if (error.status) return res.status(error.status).send({ error: error.message });
+        console.error('Erro ao cadastrar estoque com Prisma:', error);
+        return res.status(500).send({ error: 'Erro ao cadastrar estoque.' });
+    }
 });
 
-router.delete('/:id', (req, res) => {
-    const stockId = Number(req.params.id);
-    if (!Number.isInteger(stockId) || stockId < 1) {
+router.delete('/:id', async (req, res) => {
+    const idEstoque = Number(req.params.id);
+    if (!Number.isInteger(idEstoque) || idEstoque < 1) {
         return res.status(400).send({ error: 'id_estoque deve ser um inteiro positivo.' });
     }
 
-    pool.getConnection((connectionError, connection) => {
-        if (connectionError) return res.status(500).send({ error: 'Erro ao conectar ao banco de dados.' });
-        connection.beginTransaction((transactionError) => {
-            if (transactionError) {
-                connection.release();
-                return res.status(500).send({ error: 'Não foi possível iniciar a operação.' });
-            }
-
-            connection.query('SELECT quantidade FROM estoque WHERE id_estoque = ? FOR UPDATE', [stockId], (stockError, stocks) => {
-                if (stockError) return sendError(res, connection, 500, 'Erro ao consultar estoque.');
-                if (stocks.length === 0) return sendError(res, connection, 404, 'Registro de estoque não encontrado.');
-                if (Number(stocks[0].quantidade) !== 0) {
-                    return sendError(res, connection, 409, 'Não é possível remover um estoque com saldo disponível.');
-                }
-
-                connection.query('DELETE FROM estoque WHERE id_estoque = ?', [stockId], (deleteError) => {
-                    if (deleteError) return sendError(res, connection, 500, 'Erro ao remover estoque.');
-                    connection.commit((commitError) => {
-                        if (commitError) return sendError(res, connection, 500, 'Não foi possível confirmar a operação.');
-                        connection.release();
-                        res.status(200).send({ mensagem: 'Registro de estoque removido com sucesso.' });
-                    });
-                });
-            });
+    try {
+        const result = await prisma.estoque.deleteMany({
+            where: { id_estoque: idEstoque, quantidade: 0 }
         });
-    });
+        if (result.count > 0) {
+            return res.status(200).send({ mensagem: 'Registro de estoque removido com sucesso.' });
+        }
+
+        const estoque = await prisma.estoque.findUnique({ where: { id_estoque: idEstoque } });
+        if (!estoque) {
+            return res.status(404).send({ error: 'Registro de estoque não encontrado.' });
+        }
+        return res.status(409).send({ error: 'Não é possível remover um estoque com saldo disponível.' });
+    } catch (error) {
+        console.error('Erro ao remover estoque com Prisma:', error);
+        return res.status(500).send({ error: 'Erro ao remover estoque.' });
+    }
 });
 
 module.exports = router;

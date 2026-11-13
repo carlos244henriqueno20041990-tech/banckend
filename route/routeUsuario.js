@@ -1,10 +1,20 @@
-﻿const express = require('express');
+const express = require('express');
 const router = express.Router();
-const mysql = require('../mysql').pool;
+const prisma = require('../db/prisma');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+const { autenticar, criarToken } = require('../middleware/authenticate');
 
-const camposPublicos = 'id_usu, nome, email, contato, genero, ativo, criado_em, atualizado_em';
+const camposPublicos = {
+    id: true,
+    nome: true,
+    email: true,
+    contato: true,
+    genero: true,
+    ativo: true,
+    criado_em: true,
+    atualizado_em: true
+};
 
 function compararSenhaLegada(senha, senhaArmazenada) {
     const senhaBuffer = Buffer.from(senha, 'utf8');
@@ -14,123 +24,95 @@ function compararSenhaLegada(senha, senhaArmazenada) {
         crypto.timingSafeEqual(senhaBuffer, armazenadaBuffer);
 }
 
-router.post('/login', (req, res) => {
-    const { email, senha } = req.body || {};
+function converterUsuario(usuario) {
+    if (!usuario) return usuario;
+    const { id, ...dados } = usuario;
+    if (dados.ativo !== null && dados.ativo !== undefined) dados.ativo = Number(dados.ativo);
+    return { id_usu: id, ...dados };
+}
 
+function enviarErro(res, mensagem, error) {
+    console.error(mensagem, error);
+    return res.status(500).send({ error: error.message || error });
+}
+
+router.post('/login', async (req, res) => {
+    const { email, senha } = req.body || {};
     if (typeof email !== 'string' || !email.trim() || typeof senha !== 'string' || !senha) {
         return res.status(400).send({ error: 'Email e senha são obrigatórios.' });
     }
 
-    mysql.getConnection((error, conn) => {
-        if (error) return res.status(500).send({ error: 'Erro ao conectar ao banco de dados.' });
+    try {
+        const usuario = await prisma.user.findUnique({ where: { email: email.trim() } });
+        if (!usuario) return res.status(401).send({ error: 'Email ou senha inválidos.' });
 
-        conn.query(
-            'SELECT id_usu, nome, email, senha, contato, genero, ativo, criado_em, atualizado_em FROM usuarios WHERE email = ? LIMIT 1',
-            [email.trim()],
-            async (queryError, resultado) => {
-                if (queryError) {
-                    conn.release();
-                    return res.status(500).send({ error: queryError.message || queryError });
-                }
+        const senhaJaHash = /^\$2[aby]\$/.test(usuario.senha);
+        const senhaValida = senhaJaHash
+            ? await bcrypt.compare(senha, usuario.senha)
+            : compararSenhaLegada(senha, usuario.senha);
 
-                if (resultado.length === 0) {
-                    conn.release();
-                    return res.status(401).send({ error: 'Email ou senha inválidos.' });
-                }
+        if (!senhaValida || !usuario.ativo) {
+            return res.status(401).send({ error: 'Email ou senha inválidos.' });
+        }
 
-                const usuario = resultado[0];
-                const senhaJaHash = /^\$2[aby]\$/.test(usuario.senha);
-                let senhaValida;
+        let usuarioAutenticado = usuario;
+        if (!senhaJaHash) {
+            const senhaHash = await bcrypt.hash(senha, 10);
+            usuarioAutenticado = await prisma.user.update({
+                where: { id: usuario.id },
+                data: { senha: senhaHash }
+            });
+        }
 
-                try {
-                    senhaValida = senhaJaHash
-                        ? await bcrypt.compare(senha, usuario.senha)
-                        : compararSenhaLegada(senha, usuario.senha);
-                } catch (compareError) {
-                    console.error('Erro ao verificar senha do usuário:', compareError);
-                    conn.release();
-                    return res.status(500).send({ error: 'Erro ao autenticar usuário.' });
-                }
-
-                if (!senhaValida || Number(usuario.ativo) !== 1) {
-                    conn.release();
-                    return res.status(401).send({ error: 'Email ou senha inválidos.' });
-                }
-
-                const responderLogin = () => {
-                    const usuarioPublico = { ...usuario };
-                    delete usuarioPublico.senha;
-                    conn.release();
-                    return res.status(200).send({
-                        mensagem: 'Login realizado com sucesso.',
-                        usuario: usuarioPublico
-                    });
-                };
-
-                if (senhaJaHash) return responderLogin();
-
-                let senhaHash;
-                try {
-                    senhaHash = await bcrypt.hash(senha, 10);
-                } catch (hashError) {
-                    console.error('Erro ao atualizar hash de senha do usuário:', hashError);
-                    conn.release();
-                    return res.status(500).send({ error: 'Erro ao autenticar usuário.' });
-                }
-
-                conn.query(
-                    'UPDATE usuarios SET senha = ? WHERE id_usu = ?',
-                    [senhaHash, usuario.id_usu],
-                    (updateError) => {
-                        if (updateError) {
-                            conn.release();
-                            return res.status(500).send({ error: updateError.message || updateError });
-                        }
-                        responderLogin();
-                    }
-                );
-            }
-        );
-    });
-});
-
-router.get('/', (req, res) => {
-    mysql.getConnection((error, conn) => {
-        if (error) return res.status(500).send({ error: 'Erro ao conectar ao banco de dados.' });
-
-        conn.query(`SELECT ${camposPublicos} FROM usuarios ORDER BY id_usu`, (error, resultado) => {
-            conn.release();
-            if (error) return res.status(500).send({ error: error.message || error });
-            res.status(200).send({ usuarios: resultado });
+        const usuarioPublico = converterUsuario(usuarioAutenticado);
+        delete usuarioPublico.senha;
+        return res.status(200).send({
+            mensagem: 'Login realizado com sucesso.',
+            token: criarToken(usuarioAutenticado.id),
+            usuario: usuarioPublico
         });
-    });
+    } catch (error) {
+        return enviarErro(res, 'Erro ao autenticar usuário com Prisma:', error);
+    }
 });
 
-router.get('/:id', (req, res) => {
+router.use(autenticar);
+
+router.get('/', async (req, res) => {
+    try {
+        const usuarios = await prisma.user.findMany({
+            select: camposPublicos,
+            orderBy: { id: 'asc' }
+        });
+        return res.status(200).send({ usuarios: usuarios.map(converterUsuario) });
+    } catch (error) {
+        return enviarErro(res, 'Erro ao listar usuários com Prisma:', error);
+    }
+});
+
+router.get('/:id', async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id < 1) {
         return res.status(400).send({ error: 'id_usu inválido.' });
     }
 
-    mysql.getConnection((error, conn) => {
-        if (error) return res.status(500).send({ error: 'Erro ao conectar ao banco de dados.' });
-
-        conn.query(`SELECT ${camposPublicos} FROM usuarios WHERE id_usu = ?`, [id], (error, resultado) => {
-            conn.release();
-            if (error) return res.status(500).send({ error: error.message || error });
-            if (resultado.length === 0) return res.status(404).send({ error: 'Usuário não encontrado.' });
-            res.status(200).send({ usuario: resultado[0] });
+    try {
+        const usuario = await prisma.user.findUnique({
+            where: { id },
+            select: camposPublicos
         });
-    });
+        if (!usuario) return res.status(404).send({ error: 'Usuário não encontrado.' });
+        return res.status(200).send({ usuario: converterUsuario(usuario) });
+    } catch (error) {
+        return enviarErro(res, 'Erro ao consultar usuário com Prisma:', error);
+    }
 });
 
-router.post('/', (req, res) => {
-    const { nome, email, senha, contato, genero, ativo } = req.body;
-
+router.post('/', async (req, res) => {
+    const { nome, email, senha, contato, genero, ativo } = req.body || {};
     if (!nome || !email || !senha) {
         return res.status(400).send({ error: 'Nome, email e senha são obrigatórios.' });
     }
-
     if (typeof senha !== 'string') {
         return res.status(400).send({ error: 'A senha deve ser um texto.' });
     }
@@ -138,98 +120,82 @@ router.post('/', (req, res) => {
         return res.status(400).send({ error: 'A senha não pode exceder 72 bytes.' });
     }
 
-    bcrypt.hash(senha, 10, (hashError, senhaHash) => {
-        if (hashError) {
-            console.error('Erro ao gerar hash de senha:', hashError);
-            return res.status(500).send({ error: 'Erro ao criar usuário.' });
-        }
-
-        mysql.getConnection((error, conn) => {
-            if (error) return res.status(500).send({ error: 'Erro ao conectar ao banco de dados.' });
-
-            conn.query(
-                'INSERT INTO usuarios (nome, email, senha, contato, genero, ativo) VALUES (?, ?, ?, ?, ?, ?)',
-                [nome, email, senhaHash, contato || null, genero || null, ativo !== undefined ? ativo : 1],
-                (error, resultado) => {
-                    conn.release();
-                    if (error) return res.status(500).send({ error: error.message || error });
-                    res.status(201).send({
-                        mensagem: 'Usuário criado com sucesso!',
-                        id_usu: resultado.insertId
-                    });
-                }
-            );
+    try {
+        const senhaHash = await bcrypt.hash(senha, 10);
+        const usuario = await prisma.user.create({
+            data: {
+                nome,
+                email,
+                senha: senhaHash,
+                contato: contato || null,
+                genero: genero || null,
+                ativo: ativo !== undefined ? ativo === true || ativo === 1 || ativo === '1' : true
+            },
+            select: { id: true }
         });
-    });
+
+        return res.status(201).send({
+            mensagem: 'Usuário criado com sucesso!',
+            id_usu: usuario.id
+        });
+    } catch (error) {
+        if (error.code === 'P2002') {
+            return res.status(409).send({ error: 'Já existe um usuário com esse email.' });
+        }
+        return enviarErro(res, 'Erro ao criar usuário com Prisma:', error);
+    }
 });
 
-router.patch('/:id', (req, res) => {
+router.patch('/:id', async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id < 1) {
         return res.status(400).send({ error: 'id_usu inválido.' });
     }
 
     const camposPermitidos = ['nome', 'email', 'senha', 'contato', 'genero', 'ativo'];
-    const campos = Object.keys(req.body || {});
+    const body = req.body || {};
+    const campos = Object.keys(body);
     const invalidFields = campos.filter((campo) => !camposPermitidos.includes(campo));
-
     if (invalidFields.length > 0) {
         return res.status(400).send({ error: 'Campos inválidos: ' + invalidFields.join(', ') });
     }
-
     if (campos.length === 0) {
         return res.status(400).send({ error: 'Informe pelo menos um campo para atualizar.' });
     }
-
-    const atualizarUsuario = (senhaHash) => {
-        const valores = campos.map((campo) => campo === 'senha' ? senhaHash : req.body[campo]);
-        const setClause = campos.map((campo) => `${campo} = ?`).join(', ');
-
-        mysql.getConnection((error, conn) => {
-            if (error) return res.status(500).send({ error: 'Erro ao conectar ao banco de dados.' });
-
-            conn.query(`UPDATE usuarios SET ${setClause} WHERE id_usu = ?`, [...valores, id], (error, resultado) => {
-                conn.release();
-                if (error) return res.status(500).send({ error: error.message || error });
-                if (resultado.affectedRows === 0) return res.status(404).send({ error: 'Usuário não encontrado.' });
-                res.status(200).send({ mensagem: 'Usuário atualizado com sucesso!' });
-            });
-        });
-    };
-
-    if (!campos.includes('senha')) return atualizarUsuario();
-    if (typeof req.body.senha !== 'string' || !req.body.senha) {
+    if (campos.includes('senha') && (typeof body.senha !== 'string' || !body.senha)) {
         return res.status(400).send({ error: 'A senha deve ser um texto não vazio.' });
     }
-    if (bcrypt.truncates(req.body.senha)) {
+    if (campos.includes('senha') && bcrypt.truncates(body.senha)) {
         return res.status(400).send({ error: 'A senha não pode exceder 72 bytes.' });
     }
 
-    bcrypt.hash(req.body.senha, 10, (hashError, senhaHash) => {
-        if (hashError) {
-            console.error('Erro ao gerar hash de senha:', hashError);
-            return res.status(500).send({ error: 'Erro ao atualizar usuário.' });
+    try {
+        const data = { ...body };
+        if (campos.includes('senha')) data.senha = await bcrypt.hash(body.senha, 10);
+        if (campos.includes('ativo')) {
+            data.ativo = body.ativo === true || body.ativo === 1 || body.ativo === '1';
         }
-        atualizarUsuario(senhaHash);
-    });
+        const result = await prisma.user.updateMany({ where: { id }, data });
+        if (result.count === 0) return res.status(404).send({ error: 'Usuário não encontrado.' });
+        return res.status(200).send({ mensagem: 'Usuário atualizado com sucesso!' });
+    } catch (error) {
+        return enviarErro(res, 'Erro ao atualizar usuário com Prisma:', error);
+    }
 });
 
-router.delete('/:id', (req, res) => {
+router.delete('/:id', async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id < 1) {
         return res.status(400).send({ error: 'id_usu inválido.' });
     }
 
-    mysql.getConnection((error, conn) => {
-        if (error) return res.status(500).send({ error: 'Erro ao conectar ao banco de dados.' });
-
-        conn.query('DELETE FROM usuarios WHERE id_usu = ?', [id], (error, resultado) => {
-            conn.release();
-            if (error) return res.status(500).send({ error: error.message || error });
-            if (resultado.affectedRows === 0) return res.status(404).send({ error: 'Usuário não encontrado.' });
-            res.status(200).send({ mensagem: 'Usuário removido com sucesso!' });
-        });
-    });
+    try {
+        const result = await prisma.user.deleteMany({ where: { id } });
+        if (result.count === 0) return res.status(404).send({ error: 'Usuário não encontrado.' });
+        return res.status(200).send({ mensagem: 'Usuário removido com sucesso!' });
+    } catch (error) {
+        return enviarErro(res, 'Erro ao remover usuário com Prisma:', error);
+    }
 });
 
 module.exports = router;

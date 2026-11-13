@@ -1,111 +1,31 @@
-const express = require('express');
-const router = express.Router();
-const mysql = require('../mysql').pool;
+const { createCrudRouter, prepare } = require('./prismaCrud');
 
-router.get('/', (req, res) => {
-    mysql.getConnection((error, conn) => {
-        if (error) return res.status(500).send({ error: 'Erro ao conectar ao banco de dados.' });
-
-        conn.query('SELECT * FROM saidas ORDER BY id_saida', (error, resultado) => {
-            conn.release();
-            if (error) return res.status(500).send({ error: error.message || error });
-            res.status(200).send({ saidas: resultado });
-        });
-    });
-});
-
-router.get('/:id', (req, res) => {
-    const id = Number(req.params.id);
-    if (!Number.isInteger(id) || id < 1) {
-        return res.status(400).send({ error: 'id_saida inválido.' });
+const config = {
+    model: 'saida',
+    collection: 'saidas',
+    singular: 'saida',
+    idField: 'id_saida',
+    responseId: 'id_saida',
+    notFoundMessage: 'Saída não encontrada.',
+    required: ['id_produto', 'id_funcionario', 'quantidade', 'valor_unitario'],
+    requiredMessage: 'id_produto, id_funcionario, quantidade e valor_unitario são obrigatórios.',
+    createdMessage: 'Saída cadastrada com sucesso.',
+    updatedMessage: 'Saída atualizada com sucesso.',
+    deletedMessage: 'Saída removida com sucesso.',
+    fields: ['id_produto', 'id_funcionario', 'quantidade', 'valor_unitario', 'data_saida', 'destino'],
+    types: {
+        id_produto: 'int', id_funcionario: 'int', quantidade: 'int',
+        valor_unitario: 'float', data_saida: 'date', destino: 'string'
+    },
+    prepareCreate(body) {
+        const data = prepare(this, body);
+        data.data_saida = body.data_saida ? data.data_saida : null;
+        data.destino = body.destino || null;
+        return data;
+    },
+    prepareUpdate(body) {
+        return prepare(this, body);
     }
+};
 
-    mysql.getConnection((error, conn) => {
-        if (error) return res.status(500).send({ error: 'Erro ao conectar ao banco de dados.' });
-
-        conn.query('SELECT * FROM saidas WHERE id_saida = ?', [id], (error, resultado) => {
-            conn.release();
-            if (error) return res.status(500).send({ error: error.message || error });
-            if (resultado.length === 0) return res.status(404).send({ error: 'Saída não encontrada.' });
-            res.status(200).send({ saida: resultado[0] });
-        });
-    });
-});
-
-router.post('/', (req, res) => {
-    const { id_produto, id_funcionario, quantidade, valor_unitario, data_saida, destino } = req.body;
-
-    if (!id_produto || !id_funcionario || !quantidade || !valor_unitario) {
-        return res.status(400).send({ error: 'id_produto, id_funcionario, quantidade e valor_unitario são obrigatórios.' });
-    }
-
-    mysql.getConnection((error, conn) => {
-        if (error) return res.status(500).send({ error: 'Erro ao conectar ao banco de dados.' });
-
-        conn.query(
-            'INSERT INTO saidas (id_produto, id_funcionario, quantidade, valor_unitario, data_saida, destino) VALUES (?, ?, ?, ?, ?, ?)',
-            [id_produto, id_funcionario, quantidade, valor_unitario, data_saida || null, destino || null],
-            (error, resultado) => {
-                conn.release();
-                if (error) return res.status(500).send({ error: error.message || error });
-                res.status(201).send({
-                    mensagem: 'Saída cadastrada com sucesso.',
-                    id_saida: resultado.insertId
-                });
-            }
-        );
-    });
-});
-
-router.patch('/:id', (req, res) => {
-    const id = Number(req.params.id);
-    if (!Number.isInteger(id) || id < 1) {
-        return res.status(400).send({ error: 'id_saida inválido.' });
-    }
-
-    const camposPermitidos = ['id_produto', 'id_funcionario', 'quantidade', 'valor_unitario', 'data_saida', 'destino'];
-    const campos = Object.keys(req.body || {});
-    const invalidFields = campos.filter((campo) => !camposPermitidos.includes(campo));
-
-    if (invalidFields.length > 0) {
-        return res.status(400).send({ error: 'Campos inválidos: ' + invalidFields.join(', ') });
-    }
-
-    if (campos.length === 0) {
-        return res.status(400).send({ error: 'Informe pelo menos um campo para atualizar.' });
-    }
-
-    const valores = campos.map((campo) => req.body[campo]);
-    const setClause = campos.map((campo) => `${campo} = ?`).join(', ');
-
-    mysql.getConnection((error, conn) => {
-        if (error) return res.status(500).send({ error: 'Erro ao conectar ao banco de dados.' });
-
-        conn.query(`UPDATE saidas SET ${setClause} WHERE id_saida = ?`, [...valores, id], (error, resultado) => {
-            conn.release();
-            if (error) return res.status(500).send({ error: error.message || error });
-            if (resultado.affectedRows === 0) return res.status(404).send({ error: 'Saída não encontrada.' });
-            res.status(200).send({ mensagem: 'Saída atualizada com sucesso.' });
-        });
-    });
-});
-
-router.delete('/:id', (req, res) => {
-    const id = Number(req.params.id);
-    if (!Number.isInteger(id) || id < 1) {
-        return res.status(400).send({ error: 'id_saida inválido.' });
-    }
-
-    mysql.getConnection((error, conn) => {
-        if (error) return res.status(500).send({ error: 'Erro ao conectar ao banco de dados.' });
-
-        conn.query('DELETE FROM saidas WHERE id_saida = ?', [id], (error, resultado) => {
-            conn.release();
-            if (error) return res.status(500).send({ error: error.message || error });
-            if (resultado.affectedRows === 0) return res.status(404).send({ error: 'Saída não encontrada.' });
-            res.status(200).send({ mensagem: 'Saída removida com sucesso.' });
-        });
-    });
-});
-
-module.exports = router;
+module.exports = createCrudRouter(config);
